@@ -18,7 +18,7 @@ whisper_model = None
 def get_whisper_model():
     global whisper_model
     if whisper_model is None:
-        whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
+        whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
     return whisper_model
 
 class UrlRequest(BaseModel):
