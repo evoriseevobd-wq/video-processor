@@ -27,6 +27,16 @@ class UrlRequest(BaseModel):
 class JobRequest(BaseModel):
     job_id: str
 
+class CortarRequest(BaseModel):
+    job_id: str
+    corte_id: str
+    inicio: str
+    fim: str
+
+class RenderizarRequest(BaseModel):
+    job_id: str
+    corte_id: str
+
 @app.get("/")
 def health():
     return {"status": "ok"}
@@ -111,8 +121,99 @@ def transcrever(req: JobRequest):
         "transcricao": transcricao
     }
 
+@app.post("/cortar")
+def cortar(req: CortarRequest):
+    job_dir = JOBS_DIR / req.job_id
+    video_path = job_dir / "video_original.mp4"
+    corte_path = job_dir / f"corte_{req.corte_id}_bruto.mp4"
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Vídeo não encontrado")
+    result = subprocess.run(
+        ["ffmpeg", "-i", str(video_path),
+         "-ss", req.inicio, "-to", req.fim,
+         "-c:v", "libx264", "-c:a", "aac", "-y",
+         str(corte_path)],
+        capture_output=True, text=True, timeout=600
+    )
+    if result.returncode != 0:
+        raise HTTPException(status_code=400, detail=result.stderr)
+    return {"job_id": req.job_id, "corte_id": req.corte_id, "arquivo": str(corte_path)}
+
+@app.post("/gerar-legenda")
+def gerar_legenda(req: CortarRequest):
+    job_dir = JOBS_DIR / req.job_id
+    transcricao_path = job_dir / "transcricao.json"
+    if not transcricao_path.exists():
+        raise HTTPException(status_code=404, detail="Transcrição não encontrada")
+    with open(transcricao_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    segments = data["segments"]
+    inicio_seg = time_to_seconds(req.inicio)
+    fim_seg = time_to_seconds(req.fim)
+    corte_segments = [s for s in segments
+                      if time_to_seconds(s["inicio"]) >= inicio_seg - 1
+                      and time_to_seconds(s["fim"]) <= fim_seg + 1]
+    srt_content = ""
+    for i, seg in enumerate(corte_segments, 1):
+        seg_inicio = max(0, time_to_seconds(seg["inicio"]) - inicio_seg)
+        seg_fim = max(0, time_to_seconds(seg["fim"]) - inicio_seg)
+        srt_content += f"{i}\n"
+        srt_content += f"{seconds_to_srt(seg_inicio)} --> {seconds_to_srt(seg_fim)}\n"
+        srt_content += f"{seg['texto']}\n\n"
+    srt_path = job_dir / f"corte_{req.corte_id}.srt"
+    with open(srt_path, "w", encoding="utf-8") as f:
+        f.write(srt_content)
+    return {"job_id": req.job_id, "corte_id": req.corte_id, "arquivo_srt": str(srt_path)}
+
+@app.post("/renderizar")
+def renderizar(req: RenderizarRequest):
+    job_dir = JOBS_DIR / req.job_id
+    corte_path = job_dir / f"corte_{req.corte_id}_bruto.mp4"
+    srt_path = job_dir / f"corte_{req.corte_id}.srt"
+    output_path = job_dir / f"corte_{req.corte_id}_final.mp4"
+    if not corte_path.exists():
+        raise HTTPException(status_code=404, detail="Corte bruto não encontrado")
+    if srt_path.exists():
+        vf_filter = (
+            f"scale=1080:1920:force_original_aspect_ratio=decrease,"
+            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,"
+            f"subtitles={str(srt_path)}:force_style="
+            f"'FontSize=18,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,Outline=2'"
+        )
+    else:
+        vf_filter = (
+            "scale=1080:1920:force_original_aspect_ratio=decrease,"
+            "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black"
+        )
+    result = subprocess.run(
+        ["ffmpeg", "-i", str(corte_path),
+         "-vf", vf_filter,
+         "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+         "-c:a", "aac", "-b:a", "128k", "-y",
+         str(output_path)],
+        capture_output=True, text=True, timeout=1800
+    )
+    if result.returncode != 0:
+        raise HTTPException(status_code=400, detail=result.stderr)
+    return {
+        "job_id": req.job_id,
+        "corte_id": req.corte_id,
+        "arquivo_final": str(output_path)
+    }
+
 def format_time(seconds: float) -> str:
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
+
+def time_to_seconds(time_str: str) -> float:
+    parts = time_str.split(":")
+    return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+
+def seconds_to_srt(seconds: float) -> str:
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int((seconds - int(seconds)) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
