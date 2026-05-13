@@ -1,3 +1,5 @@
 fastapi
 uvicorn[standard]
 faster-whisper
+opencv-python-headless
+numpy
