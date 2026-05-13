@@ -45,7 +45,7 @@ def health():
 def metadados(req: UrlRequest):
     result = subprocess.run(
         ["yt-dlp", "--dump-json", "--no-download",
-        "--extractor-args", "youtube:player_client=tv_embedded",
+        "--js-runtimes", "nodejs",
          req.youtube_url],
         capture_output=True, text=True, timeout=30
     )
@@ -68,7 +68,7 @@ def baixar(req: UrlRequest):
     output_path = str(job_dir / "video_original.mp4")
     result = subprocess.run(
         ["yt-dlp", "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
-         "--extractor-args", "youtube:player_client=tv_embedded",
+          "--js-runtimes", "nodejs",
          "-o", output_path, req.youtube_url],
         capture_output=True, text=True, timeout=3600
     )
