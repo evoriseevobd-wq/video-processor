@@ -293,7 +293,7 @@ def renderizar(req: RenderizarRequest):
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2[base];"
             f"[base]subtitles={str(legend_file)}:force_style="
             f"'FontSize=8,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
-            f"Outline=2,Alignment=2,MarginV=20'[subbed];"
+            f"Outline=2,Alignment=2,MarginV=80'[subbed];"
             f"[subbed]{cta}[out]"
         )
     else:
