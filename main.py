@@ -181,19 +181,24 @@ def renderizar(req: RenderizarRequest):
         raise HTTPException(status_code=404, detail="Corte bruto não encontrado")
     if srt_path.exists():
         vf_filter = (
-            f"scale=1080:1920:force_original_aspect_ratio=decrease,"
-            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,"
+            f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+            f"crop=1080:1920,gblur=sigma=20[bg];"
+            f"[0:v]scale=1080:1080:force_original_aspect_ratio=decrease[fg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,"
             f"subtitles={str(srt_path)}:force_style="
-            f"'FontSize=18,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,Outline=2'"
+            f"'FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+            f"Outline=3,Bold=1,Alignment=2'"
         )
     else:
         vf_filter = (
-            "scale=1080:1920:force_original_aspect_ratio=decrease,"
-            "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black"
+            "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,gblur=sigma=20[bg];"
+            "[0:v]scale=1080:1080:force_original_aspect_ratio=decrease[fg];"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2"
         )
     result = subprocess.run(
         ["ffmpeg", "-i", str(corte_path),
-         "-vf", vf_filter,
+         "-filter_complex", vf_filter,
          "-c:v", "libx264", "-crf", "23", "-preset", "fast",
          "-c:a", "aac", "-b:a", "128k", "-y",
          str(output_path)],
