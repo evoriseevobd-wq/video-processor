@@ -46,6 +46,7 @@ def metadados(req: UrlRequest):
     result = subprocess.run(
         ["yt-dlp", "--dump-json", "--no-download",
         "--js-runtimes", "node",
+        "--cookies", "/app/cookies.txt",
          req.youtube_url],
         capture_output=True, text=True, timeout=30
     )
@@ -69,6 +70,7 @@ def baixar(req: UrlRequest):
     result = subprocess.run(
         ["yt-dlp", "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4",
           "--js-runtimes", "node",
+          "--cookies", "/app/cookies.txt",
          "-o", output_path, req.youtube_url],
         capture_output=True, text=True, timeout=3600
     )
