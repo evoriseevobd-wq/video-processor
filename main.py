@@ -190,7 +190,7 @@ def renderizar(req: RenderizarRequest):
 
     cta = (
         f"drawtext=text='Segue para mais conteudo':"
-        f"fontsize=26:fontcolor=white:bold=1:"
+        f"fontsize=26:fontcolor=white:"
         f"x=(w-text_w)/2:y=h-100:"
         f"alpha='if(gte(t,{cta_start}),min(1,(t-{cta_start})/0.5),0)':"
         f"borderw=3:bordercolor=black"
