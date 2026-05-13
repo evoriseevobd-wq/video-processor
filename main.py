@@ -4,6 +4,7 @@ import uuid
 import subprocess
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
 
@@ -205,6 +206,18 @@ def renderizar(req: RenderizarRequest):
         "corte_id": req.corte_id,
         "arquivo_final": str(output_path)
     }
+
+@app.get("/download/{job_id}/{corte_id}")
+def download(job_id: str, corte_id: str):
+    job_dir = JOBS_DIR / job_id
+    arquivo = job_dir / f"corte_{corte_id}_final.mp4"
+    if not arquivo.exists():
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado")
+    return FileResponse(
+        path=str(arquivo),
+        media_type="video/mp4",
+        filename=f"corte_{corte_id}_final.mp4"
+    )
 
 def format_time(seconds: float) -> str:
     h = int(seconds // 3600)
