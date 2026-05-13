@@ -3,7 +3,7 @@ import json
 import uuid
 import subprocess
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File as FastAPIFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
@@ -179,26 +179,47 @@ def renderizar(req: RenderizarRequest):
     output_path = job_dir / f"corte_{req.corte_id}_final.mp4"
     if not corte_path.exists():
         raise HTTPException(status_code=404, detail="Corte bruto não encontrado")
+
+    probe = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(corte_path)],
+        capture_output=True, text=True
+    )
+    duration = float(probe.stdout.strip()) if probe.returncode == 0 else 60
+    cta_start = max(0, duration - 3)
+
+    cta = (
+        f"drawtext=text='Segue para mais conteudo':"
+        f"fontsize=26:fontcolor=white:bold=1:"
+        f"x=(w-text_w)/2:y=h-100:"
+        f"alpha='if(gte(t,{cta_start}),min(1,(t-{cta_start})/0.5),0)':"
+        f"borderw=3:bordercolor=black"
+    )
+
     if srt_path.exists():
-        vf_filter = (
+        fc = (
             f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
             f"crop=1080:1920,gblur=sigma=20[bg];"
             f"[0:v]scale=1080:1080:force_original_aspect_ratio=decrease[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,"
-            f"subtitles={str(srt_path)}:force_style="
-            f"'FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
-            f"Outline=3,Bold=1,Alignment=2'"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2[base];"
+            f"[base]subtitles={str(srt_path)}:force_style="
+            f"'FontSize=12,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+            f"Outline=3,Bold=1,Alignment=2'[subbed];"
+            f"[subbed]{cta}[out]"
         )
     else:
-        vf_filter = (
-            "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-            "crop=1080:1920,gblur=sigma=20[bg];"
-            "[0:v]scale=1080:1080:force_original_aspect_ratio=decrease[fg];"
-            "[bg][fg]overlay=(W-w)/2:(H-h)/2"
+        fc = (
+            f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+            f"crop=1080:1920,gblur=sigma=20[bg];"
+            f"[0:v]scale=1080:1080:force_original_aspect_ratio=decrease[fg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2[base];"
+            f"[base]{cta}[out]"
         )
+
     result = subprocess.run(
         ["ffmpeg", "-i", str(corte_path),
-         "-filter_complex", vf_filter,
+         "-filter_complex", fc,
+         "-map", "[out]", "-map", "0:a",
          "-c:v", "libx264", "-crf", "23", "-preset", "fast",
          "-c:a", "aac", "-b:a", "128k", "-y",
          str(output_path)],
@@ -223,6 +244,13 @@ def download(job_id: str, corte_id: str):
         media_type="video/mp4",
         filename=f"corte_{corte_id}_final.mp4"
     )
+
+@app.post("/atualizar-cookies")
+async def atualizar_cookies(file: UploadFile = FastAPIFile(...)):
+    conteudo = await file.read()
+    with open("/app/cookies.txt", "wb") as f:
+        f.write(conteudo)
+    return {"status": "cookies atualizados"}
 
 def format_time(seconds: float) -> str:
     h = int(seconds // 3600)
