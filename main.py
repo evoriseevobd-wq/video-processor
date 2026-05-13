@@ -101,16 +101,25 @@ def transcrever(req: JobRequest):
     if not audio_path.exists():
         raise HTTPException(status_code=404, detail="Áudio não encontrado")
     model = get_whisper_model()
-    segments, info = model.transcribe(str(audio_path), beam_size=5, language="pt")
+    segments, info = model.transcribe(str(audio_path), beam_size=5, language="pt", word_timestamps=True)
     transcricao = []
     texto_completo = ""
     for segment in segments:
         inicio = format_time(segment.start)
         fim = format_time(segment.end)
+        words = []
+        if hasattr(segment, 'words') and segment.words:
+            for word in segment.words:
+                words.append({
+                    "word": word.word.strip(),
+                    "inicio": word.start,
+                    "fim": word.end
+                })
         transcricao.append({
             "inicio": inicio,
             "fim": fim,
-            "texto": segment.text.strip()
+            "texto": segment.text.strip(),
+            "words": words
         })
         texto_completo += f"[{inicio} - {fim}] {segment.text.strip()}\n"
     transcricao_path = job_dir / "transcricao.json"
@@ -159,27 +168,104 @@ def gerar_legenda(req: CortarRequest):
     corte_segments = [s for s in segments
                       if time_to_seconds(s["inicio"]) >= inicio_seg - 1
                       and time_to_seconds(s["fim"]) <= fim_seg + 1]
+
+    # Gera ASS com destaque por palavra
+    ass_header = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,2,0,2,10,10,20,1
+Style: Highlight,Arial,28,&H0000FFFF,&H000000FF,&H00000000,&H00000000,1,0,0,0,100,100,0,0,1,2,0,2,10,10,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    ass_events = ""
+    for seg in corte_segments:
+        seg_inicio = max(0, time_to_seconds(seg["inicio"]) - inicio_seg)
+        seg_fim = max(0, time_to_seconds(seg["fim"]) - inicio_seg)
+        words = seg.get("words", [])
+        if words:
+            for word in words:
+                w_inicio = max(0, word["inicio"] - inicio_seg)
+                w_fim = max(0, word["fim"] - inicio_seg)
+                # Linha com palavra destacada
+                before = " ".join(w["word"] for w in words if w["fim"] <= word["inicio"])
+                after = " ".join(w["word"] for w in words if w["inicio"] >= word["fim"])
+                highlighted = word["word"]
+                text = ""
+                if before:
+                    text += f"{{\\rDefault}}{before} "
+                text += f"{{\\rHighlight}}{highlighted}"
+                if after:
+                    text += f"{{\\rDefault}} {after}"
+                ass_events += f"Dialogue: 0,{seconds_to_ass(w_inicio)},{seconds_to_ass(w_fim)},Default,,0,0,0,,{text}\n"
+        else:
+            text = seg["texto"]
+            ass_events += f"Dialogue: 0,{seconds_to_ass(seg_inicio)},{seconds_to_ass(seg_fim)},Default,,0,0,0,,{text}\n"
+
+    ass_content = ass_header + ass_events
+    ass_path = job_dir / f"corte_{req.corte_id}.ass"
+    with open(ass_path, "w", encoding="utf-8") as f:
+        f.write(ass_content)
+
+    # Mantém SRT como fallback
     srt_content = ""
     for i, seg in enumerate(corte_segments, 1):
         seg_inicio = max(0, time_to_seconds(seg["inicio"]) - inicio_seg)
         seg_fim = max(0, time_to_seconds(seg["fim"]) - inicio_seg)
-        srt_content += f"{i}\n"
-        srt_content += f"{seconds_to_srt(seg_inicio)} --> {seconds_to_srt(seg_fim)}\n"
-        srt_content += f"{seg['texto']}\n\n"
+        srt_content += f"{i}\n{seconds_to_srt(seg_inicio)} --> {seconds_to_srt(seg_fim)}\n{seg['texto']}\n\n"
     srt_path = job_dir / f"corte_{req.corte_id}.srt"
     with open(srt_path, "w", encoding="utf-8") as f:
         f.write(srt_content)
-    return {"job_id": req.job_id, "corte_id": req.corte_id, "arquivo_srt": str(srt_path)}
+
+    return {"job_id": req.job_id, "corte_id": req.corte_id, "arquivo_ass": str(ass_path), "arquivo_srt": str(srt_path)}
 
 @app.post("/renderizar")
 def renderizar(req: RenderizarRequest):
+    import cv2
+    import numpy as np
+
     job_dir = JOBS_DIR / req.job_id
     corte_path = job_dir / f"corte_{req.corte_id}_bruto.mp4"
+    ass_path = job_dir / f"corte_{req.corte_id}.ass"
     srt_path = job_dir / f"corte_{req.corte_id}.srt"
     output_path = job_dir / f"corte_{req.corte_id}_final.mp4"
     if not corte_path.exists():
         raise HTTPException(status_code=404, detail="Corte bruto não encontrado")
 
+    # Detecta rosto a cada 15 frames
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    cap = cv2.VideoCapture(str(corte_path))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    face_centers_x = []
+    frame_count = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if frame_count % 15 == 0:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+            if len(faces) > 0:
+                x, w = faces[0][0], faces[0][2]
+                face_centers_x.append(x + w // 2)
+        frame_count += 1
+    cap.release()
+
+    # Posição X do zoom — usa centro do rosto ou centro do vídeo
+    if face_centers_x:
+        avg_x = int(sum(face_centers_x) / len(face_centers_x))
+        crop_x = max(0, min(avg_x - 540, width - 1080))
+    else:
+        crop_x = max(0, (width - 1080) // 2)
+
+    # Duração para CTA
     probe = subprocess.run(
         ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", str(corte_path)],
@@ -196,22 +282,26 @@ def renderizar(req: RenderizarRequest):
         f"borderw=3:bordercolor=black"
     )
 
-    if srt_path.exists():
+    legend_file = ass_path if ass_path.exists() else srt_path if srt_path.exists() else None
+
+    if legend_file:
         fc = (
             f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
             f"crop=1080:1920,gblur=sigma=20[bg];"
-            f"[0:v]scale=1080:1080:force_original_aspect_ratio=decrease[fg];"
+            f"[0:v]crop={min(width,height)}:{min(width,height)}:{crop_x}:0,"
+            f"scale=1080:1080[fg];"
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2[base];"
-            f"[base]subtitles={str(srt_path)}:force_style="
-            f"'FontSize=12,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
-            f"Outline=3,Bold=1,Alignment=2'[subbed];"
+            f"[base]subtitles={str(legend_file)}:force_style="
+            f"'FontSize=8,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+            f"Outline=2,Alignment=2,MarginV=20'[subbed];"
             f"[subbed]{cta}[out]"
         )
     else:
         fc = (
             f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
             f"crop=1080:1920,gblur=sigma=20[bg];"
-            f"[0:v]scale=1080:1080:force_original_aspect_ratio=decrease[fg];"
+            f"[0:v]crop={min(width,height)}:{min(width,height)}:{crop_x}:0,"
+            f"scale=1080:1080[fg];"
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2[base];"
             f"[base]{cta}[out]"
         )
@@ -268,3 +358,10 @@ def seconds_to_srt(seconds: float) -> str:
     s = int(seconds % 60)
     ms = int((seconds - int(seconds)) * 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+def seconds_to_ass(seconds: float) -> str:
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    cs = int((seconds - int(seconds)) * 100)
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
